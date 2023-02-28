@@ -1,0 +1,90 @@
+SELECT
+/*Concatenate source and medium fields with a slash separator and create a new field called source_medium */
+  CONCAT(source,' / ',medium) AS source_medium,
+/* Count the number of distinct session IDs
+and create a new field called sessions */
+  COUNT(DISTINCT a.session_id) AS sessions,
+/* Count the number of distinct user pseudo-IDs and create a new field called users */
+  COUNT(DISTINCT a.user_pseudo_id) AS users,
+  COUNT(DISTINCT
+    CASE
+/* Count the number of distinct engaged sessions by concatenating user pseudo-IDs and session IDs for sessions where session_engaged = '1' */
+      WHEN b.session_engaged = '1' THEN CONCAT(a.user_pseudo_id,b.session_id)
+    END
+  ) AS engaged_sessions,
+  COUNT(DISTINCT
+    CASE
+/* Count the number of distinct bounced sessions by concatenating
+user pseudo-IDs and session IDs for sessions where session_engaged = '0'*/
+      WHEN b.session_engaged = '0' THEN CONCAT(a.user_pseudo_id,b.session_id)
+    END
+  ) AS bounces,
+  COUNT(DISTINCT
+    CASE
+/* Count the number of distinct bounces (same as the previous line)
+but for calculating the bounce rate in the next line' */
+      WHEN b.session_engaged = '0' THEN CONCAT(a.user_pseudo_id,b.session_id)
+    END
+/* Calculate the bounce rate by dividing the number of bounces
+by the number of sessions */
+  ) / COUNT(DISTINCT a.session_id) AS bounce_rate
+FROM
+  (
+    SELECT
+      (
+        SELECT value.int_value
+        FROM UNNEST(event_params)
+-- Select the session ID for page_view events
+        WHERE event_name = 'page_view' AND key = 'ga_session_id'
+      ) AS session_id,
+      COALESCE(
+        (
+          SELECT value.string_value
+          FROM UNNEST(event_params)
+-- Select the source for page_view events
+          WHERE event_name = 'page_view' AND key = 'source'
+-- Replace null values with (direct)
+        ), '(direct)'
+      ) AS source,
+      COALESCE(
+        (
+          SELECT value.string_value
+          FROM UNNEST(event_params)
+-- Select the medium for page_view events
+          WHERE event_name = 'page_view' AND key = 'medium'
+-- Replace null values with (none)
+        ), '(none)'
+      ) AS medium,
+-- Select the user pseudo-ID for page_view events
+      user_pseudo_id
+    FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+-- Filter for only page_view events
+    WHERE event_name = 'page_view'
+-- Group by session ID, source, medium, and user pseudo-ID
+    GROUP BY 1, 2, 3, 4
+  ) a
+LEFT JOIN (
+  SELECT
+    user_pseudo_id,
+    (
+      SELECT value.int_value
+      FROM UNNEST(event_params)
+-- Select the session ID for session_engaged events
+      WHERE key = 'ga_session_id'
+    ) AS session_id,
+    MAX(
+      (
+        SELECT value.string_value
+        FROM UNNEST(event_params)
+-- Select the session engaged status for session_engaged events
+        WHERE key = 'session_engaged'
+      )
+    ) AS session_engaged
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+-- Filter for only session_engaged events
+  WHERE event_name = 'session_engaged'
+  -- Group by user pseudo-ID and session ID
+  GROUP BY 1, 2
+) b ON a.session_id = b.session_id
+GROUP BY 1
+ORDER BY sessions DESC
